@@ -194,19 +194,24 @@ set_up_pod () {
 # update_policy discovers romana network policies that affect current pod
 # and notifies romana agent to include new pod into policy
 update_policy () {
-	# and replace stdout with logfile
+	# Redirect stdout to prevent command output in kubernetes stream
 	LOGFILE=/tmp/romana-cni.log
 	exec &>> $LOGFILE
 
 	log "### Update policy ###"
 	POD=$1
 	NAMESPACE=$2
+
 	LABELS=$( $KUBECTL $KUBEARGS describe pod $POD | get_labels)
 	log "--- LABELS=$LABELS ---"
 	declare -A POLICIES
+
+	# for each label pair on a pod
 	for label in $LABELS; do
-		L1="${label/=/\/}#"
+		L1="${label}#"
 		log "--- LABEL in search request = $L1 ---"
+
+		# get kubernetes policies which selecting current label pair
 		SRESPONSE=$($RSEARCH_BIN -c $RSEARCH_CONFIG -r $L1)
 		if [[ "$SRESPONSE" == "null" ]]; then
 			log "--- null search response"
@@ -216,6 +221,8 @@ update_policy () {
 		log "--- SEARCH RESPONSE=$SRESPONSE ---"
 		KEYS=$(echo $SRESPONSE | jq -r keys[])
 		log "--- RESPONSE KEYS=$KEYS ---"
+
+		# store policies in an associate array [uid]policy
 		for key in $KEYS; do
 			policy_id=$(echo $SRESPONSE | jq -r ".[$key].metadata.uid")
 			log "--- POLICY_ID=$policy_id ---"
@@ -224,6 +231,7 @@ update_policy () {
 			POLICIES[$policy_id]=$policy_body
 		done
 
+		# for each policy in array send 'update' request to an agent
 		for policy_id in ${!POLICIES[*]}; do
 			log "--- making request to update ${POLICIES[$policy_id]} ---"
 			req=$( printf '{ "type" : "MODIFIED", "object": %s }' "${POLICIES[$policy_id]}" )
