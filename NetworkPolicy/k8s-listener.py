@@ -520,31 +520,7 @@ def ensure_ns_watcher_stopped(ns_uid, ns_name):
             ns_proc.terminate()
         del listen_pool[ns_uid]
 
-# Processing kubernetes events coming from api
-def process(s, uid_by_ns, pd_by_uid):
-
-    # Kube api listener is a GET request which will timeout eventually
-    # producing empty request.
-    try:
-        obj = simplejson.loads(s)
-    except Exception as e:
-        logging.info("====== could not parse:")
-        logging.info(s)
-        logging.info("@@@@ Error: %s" % str(e))
-        return
-    op = obj.get("type")
-    if not op:
-        logging.warning("Failed to parse event type from out of %s" % obj)
-        return
-
-    if op == 'NS_CLEANUP':
-        ns = obj.get("namespace")
-        for uid in uid_by_ns[ns]:
-            dispatch_orders('DELETED', pd_by_uid[uid])
-            del pd_by_uid[uid]
-            uid_by_ns[ns].remove(uid)
-        return
-
+def make_romana_policy(obj):
     rule = parse_rule_specs(obj)
     if not rule:
         logging.warning("Failed to parse network policy rules out of %s" % obj)
@@ -584,6 +560,35 @@ def process(s, uid_by_ns, pd_by_uid):
             "port" : obj['object']['spec']['allowIncoming']['toPorts'][0]['port']
         }
     }
+    return policy_definition
+
+
+# Processing kubernetes events coming from api
+def process(s, uid_by_ns, pd_by_uid):
+
+    # Kube api listener is a GET request which will timeout eventually
+    # producing empty request.
+    try:
+        obj = simplejson.loads(s)
+    except Exception as e:
+        logging.info("====== could not parse:")
+        logging.info(s)
+        logging.info("@@@@ Error: %s" % str(e))
+        return
+    op = obj.get("type")
+    if not op:
+        logging.warning("Failed to parse event type from out of %s" % obj)
+        return
+
+    if op == 'NS_CLEANUP':
+        ns = obj.get("namespace")
+        for uid in uid_by_ns[ns]:
+            dispatch_orders('DELETED', pd_by_uid[uid])
+            del pd_by_uid[uid]
+            uid_by_ns[ns].remove(uid)
+        return
+
+    policy_definition = make_romana_policy(obj)
 
     ns = obj['object']['metadata']['namespace']
     uid = obj['object']['metadata']['uid']
@@ -728,6 +733,23 @@ class AgentHandler(BaseHTTPRequestHandler):
     
         Expected structure: { "method" : "ADDED|DELETED", "policy_definition" : "NP" }
         """
+        if self.path=="/":
+            self.do_romana_policy_request()
+        elif self.path=="/k8s-policy-update":
+            self.do_kubernetes_policy_request()
+        else:
+            self.send_response(401)
+            self.wfile.write("Not found")
+
+        return
+
+    def do_romana_policy_request(self):
+        """
+        Processes POST requests for romana policy provisioning
+        extracts romana policy definition objects and passes it down for implementation
+    
+        Expected structure: { "method" : "ADDED|DELETED", "policy_definition" : "NP" }
+        """
 
         self.send_header('Content-type','text/html')
         self.end_headers()
@@ -758,6 +780,43 @@ class AgentHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.wfile.write("Policy definition deleted")
             policy_update(addr_scheme, policy_def, delete_policy=True)
+
+        return
+
+    def do_kubernetes_policy_request(self):
+        """
+        Processes POST requests for kubernetes policy provisioning
+        extracts romana policy definition objects and passes it down for implementation
+    
+        Expected structure: { "type" : "MODIFIED", "object" : "KP" }
+        """
+
+        self.send_header('Content-type','text/html')
+        self.end_headers()
+        # Send the html message
+        headers = Message(StringIO(self.headers))
+        raw_data = self.rfile.read(int(headers["Content-Length"]))
+        try:
+            json_data = simplejson.loads(raw_data)
+        except Exception, e:
+            logging.warning("Cannot parse %s" % raw_data)
+            return
+
+        # Values of `method` are inherited directly from kubernetes create/delete policy event.
+        type = json_data.get('type')
+        obj = json_data.get('object')
+        if type not in [ 'MODIFIED' ] or not obj:
+            # HTTP 422 - Unprocessable Entity seems to be relevant. We have verified that json is valid
+            # but expected fields are missing
+            self.send_response(HTTP_Unprocessable_Entity)
+            self.wfile.write("""Expected { "type" : "MODIFIED", "object" : "KubernetesNetworkPolicy" } """)
+
+        elif json_data['type'] == 'MODIFIED':
+            self.send_response(200)
+            self.wfile.write("Policy definition accepted")
+            policy_def = make_romana_policy(json_data)
+            policy_update(addr_scheme, policy_def, delete_policy=True)
+            policy_update(addr_scheme, policy_def)
 
         return
 
