@@ -39,6 +39,9 @@ exec &>> $LOGFILE
 NETWORK_NAME="romana-k8s-network"
 PLUGIN_TYPE="romana"
 IPAM_TYPE="romana-ipam"
+RSEARCH_CONFIG="/home/ubuntu/go/src/github.com/romana/search/config.ini"
+RSEARCH_BIN="/home/ubuntu/bin"
+POLICY_URL="http://localhost:9630/k8s-policy-update"
 
 # -- Helpers
 get_pod            () { while read line; do [[ ${line/=*/} == "K8S_POD_NAME" ]] && echo ${line/*=/} || :; done; }
@@ -184,6 +187,52 @@ set_up_pod () {
 
 	# Kubernetes expects valid json on output so no one above should echo anything in stdout
 	echo -n $R
+
+	update_policy "$POD" "$NAMESPACE"
+}
+
+# update_policy discovers romana network policies that affect current pod
+# and notifies romana agent to include new pod into policy
+update_policy () {
+	# and replace stdout with logfile
+	LOGFILE=/tmp/romana-cni.log
+	exec &>> $LOGFILE
+
+	log "### Update policy ###"
+	POD=$1
+	NAMESPACE=$2
+	LABELS=$( $KUBECTL $KUBEARGS describe pod $POD | get_labels)
+	log "--- LABELS=$LABELS ---"
+	declare -A POLICIES
+	for label in $LABELS; do
+		L1="${label/=/\/}#"
+		log "--- LABEL in search request = $L1 ---"
+		SRESPONSE=$($RSEARCH_BIN -c $RSEARCH_CONFIG -r $L1)
+		if [[ "$SRESPONSE" == "null" ]]; then
+			log "--- null search response"
+			continue
+		fi
+
+		log "--- SEARCH RESPONSE=$SRESPONSE ---"
+		KEYS=$(echo $SRESPONSE | jq -r keys[])
+		log "--- RESPONSE KEYS=$KEYS ---"
+		for key in $KEYS; do
+			policy_id=$(echo $SRESPONSE | jq -r ".[$key].metadata.uid")
+			log "--- POLICY_ID=$policy_id ---"
+			policy_body=$(echo $SRESPONSE | jq -r ".[$key]" )
+			log "--- POLICY_BODY=$policy_body ---"
+			POLICIES[$policy_id]=$policy_body
+		done
+
+		for policy_id in ${!POLICIES[*]}; do
+			log "--- making request to update ${POLICIES[$policy_id]} ---"
+			req=$( printf '{ "type" : "MODIFIED", "object": %s }' "${POLICIES[$policy_id]}" )
+			log "--- making request = $req---"
+			curl -XPOST -d "$req" $POLICY_URL
+		done
+	done
+
+	log "### Update policy DONE ###"
 }
 
 case $CNI_COMMAND in
