@@ -815,8 +815,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.wfile.write("Policy definition accepted")
             policy_def = make_romana_policy(json_data)
-            policy_update(addr_scheme, policy_def, delete_policy=True)
-            policy_update(addr_scheme, policy_def)
+            delproc = Process(target=dispatch_orders, args=('DELETED',policy_def,))
+            delproc.start()
+            createproc = Process(target=dispatch_orders, args=('ADDED',policy_def,))
+            createproc.start()
 
         return
 
