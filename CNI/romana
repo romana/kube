@@ -190,7 +190,9 @@ set_up_pod () {
 
 	# While rsearch tool in development let's
 	# allow it fail.
-	update_policy "$POD" "$NAMESPACE" || :
+	if test -x RSEARCH_BIN; then
+		update_policy "$POD" "$NAMESPACE" || :
+	fi
 }
 
 # update_policy discovers romana network policies that affect current pod
