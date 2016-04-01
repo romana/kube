@@ -190,7 +190,7 @@ set_up_pod () {
 
 	# While rsearch tool in development let's
 	# allow it fail.
-	if test -x RSEARCH_BIN; then
+	if test -x $RSEARCH_BIN; then
 		update_policy "$POD" "$NAMESPACE" || :
 	fi
 }
