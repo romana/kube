@@ -39,7 +39,7 @@ exec &>> $LOGFILE
 NETWORK_NAME="romana-k8s-network"
 PLUGIN_TYPE="romana"
 IPAM_TYPE="romana-ipam"
-RSEARCH_CONFIG="/home/ubuntu/go/src/github.com/romana/search/config.ini"
+RSEARCH_CONFIG="/home/ubuntu/rsearch.ini"
 RSEARCH_BIN="/home/ubuntu/rsearch"
 POLICY_URL="http://localhost:9630/k8s-policy-update"
 
