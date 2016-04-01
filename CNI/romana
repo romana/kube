@@ -40,7 +40,7 @@ NETWORK_NAME="romana-k8s-network"
 PLUGIN_TYPE="romana"
 IPAM_TYPE="romana-ipam"
 RSEARCH_CONFIG="/home/ubuntu/go/src/github.com/romana/search/config.ini"
-RSEARCH_BIN="/home/ubuntu/bin"
+RSEARCH_BIN="/home/ubuntu/rsearch"
 POLICY_URL="http://localhost:9630/k8s-policy-update"
 
 # -- Helpers
@@ -188,7 +188,9 @@ set_up_pod () {
 	# Kubernetes expects valid json on output so no one above should echo anything in stdout
 	echo -n $R
 
-	update_policy "$POD" "$NAMESPACE"
+	# While rsearch tool in development let's
+	# allow it fail.
+	update_policy "$POD" "$NAMESPACE" || :
 }
 
 # update_policy discovers romana network policies that affect current pod
