@@ -122,6 +122,12 @@ req () {
 	printf '{ "net_if" : { "interface_name": "%s", "mac_address": "de:ad:be:ef:00:00", "ip_address" : "%s" }, "options" : { "namespace_isolation" : "%s"} }' $iface $ip $ns_isloation
 }
 
+isolation_policy_req () {
+	tenant=$1
+	[[ $2 == "on" ]] && ns_isloation="true" || ns_isloation="false"
+	printf '{ "tid" : "%s", "isolated" : %s }' $tenant $ns_isloation
+}
+
 ipam_allocate_ip () {
 	# CNI expects us to read ipam config from stdin, but for demo config is static anyway.
 	tenant=$1
@@ -169,12 +175,74 @@ set_up_pod () {
 	sudo nsenter -t ${NSPID} -n ip addr add $IP/$GATE_MASK dev eth0
 	sudo nsenter -t ${NSPID} -n ip ro add 0.0.0.0/0 dev eth0
 	sudo ip link set "veth0-${NSPID}" up
+	sudo ip ro add $IP/32 dev "veth0-${NSPID}"
 
 	log "$(req "veth0-${NSPID}" "$IP" "$NS_ISOLATION")"
 	# Romana agent does the rest (endpoint route and firewall)
-	curl -s -H 'content-type: application/json' -XPOST -d "$(req "veth0-${NSPID}" "$IP" "$NS_ISOLATION")" http://localhost:9604/kubernetes-pod-up 2>&1 >> $LOGFILE
+	# curl -s -H 'content-type: application/json' -XPOST -d "$(req "veth0-${NSPID}" "$IP" "$NS_ISOLATION")" http://localhost:9604/kubernetes-pod-up 2>&1 >> $LOGFILE
+
+	TENANT_ID=$(curl -s $ROMANA_MASTER_IP:9602/tenants | jq --arg tenant_name $NAMESPACE '.[] | if .Name==$tenant_name then .Seq else empty end')
+	SEGMENT_ID=$(curl -s $ROMANA_MASTER_IP:9602/tenants/${TENANT_ID}/segments | jq --arg segment_name $SEGMENT '.[] | if .Name==$segment_name then .Seq else empty end')
+	TENANT_ID=$(( TENANT_ID-1 ))
+	SEGMENT_ID=$(( SEGMENT_ID-1 ))
+
+	# Ensure tenant vector chain exists
+	TENANT_POLICY_VECTOR_CHAIN="ROMANA-T${TENANT_ID}"
+	if ! sudo iptables -L $TENANT_POLICY_VECTOR_CHAIN 2>/dev/null >/dev/null; then
+		log "Per tenant vector not found - creating $TENANT_POLICY_VECTOR_CHAIN"
+		sudo iptables -N $TENANT_POLICY_VECTOR_CHAIN
+	fi
+
+	# Ensure default drop vector in tenant chain
+	# TENANT_DROP_VECTOR="$TENANT_POLICY_VECTOR_CHAIN -j DROP"	
+	# if ! sudo iptables -C $TENANT_DROP_VECTOR; then
+	#	log "No default drop for current tenant - installing $TENANT_DROP_VECTOR"
+	#	sudo iptables -A $TENANT_DROP_VECTOR
+	# fi
+
+	# Ensure segment vector chain exist
+	# SEGMENT_POLICY_VECTOR_CHAIN="${TENANT_POLICY_VECTOR_CHAIN}-S${SEGMENT_ID}"
+	# if ! sudo iptables -L $SEGMENT_POLICY_VECTOR_CHAIN 2>/dev/null >/dev/null; then
+	#	log "Segment vector chain not found - creating $SEGMENT_POLICY_VECTOR_CHAIN"
+	#	sudo iptables -N $SEGMENT_POLICY_VECTOR_CHAIN
+	# fi
+
+	# Ensure segment vector in tenant chain
+	#SEGMENT_VECTOR="$TENANT_POLICY_VECTOR_CHAIN -j $SEGMENT_POLICY_VECTOR_CHAIN"
+	#if ! iptables -C $SEGMENT_VECTOR; then
+	#	log "Segment vector not found in tenant chain - creating $SEGMENT_VECTOR"
+	#	iptables -I $SEGMENT_VECTOR
+	#fi
+
+	# Header policy needed to satisfy current implementation of policy agent
+	# which expects there to be at least one rule in policy cahin
+	#SEGMENT_HEADER_POLICY="$SEGMENT_POLICY_VECTOR_CHAIN -m comment --comment POLICY_CHAIN_HEADER -j RETURN"
+	#if ! iptables -C $SEGMENT_HEADER_POLICY; then
+	#	log "Header policy not found in chain $SEGMENT_POLICY_VECTOR_CHAIN - installing"
+	#	iptables -A $SEGMENT_HEADER_POLICY
+	#fi
+
+
+	# Default rules
+	DEFAULT_INPUT="INPUT -i "veth0-${NSPID}" -j DROP"
+	DEFAULT_OUTPUT="OUTPUT -o "veth0-${NSPID}" -j DROP"
+	DEFAULT_FORWARD_IN="FORWARD -i "veth0-${NSPID}" -j $TENANT_POLICY_VECTOR_CHAIN"
+	DEFAULT_FORWARD_OUT="FORWARD -o "veth0-${NSPID}" -j ACCEPT"
+
+	for RULE in "$DEFAULT_INPUT" "$DEFAULT_OUTPUT" "$DEFAULT_FORWARD_IN" "$DEFAULT_FORWARD_OUT"; do
+		log "Ensuring that default rule $RULE exists"
+		if ! iptables -C $RULE 2>/dev/null >/dev/null; then
+			iptables -A $RULE
+		fi
+	done
 
 	log "$(req "veth0-${NSPID}" "$IP" "$NS_ISOLATION")"
+
+	# This is a responsibility of policy-manager, but since it's not implemented yet
+	# we will attempt to communicate with policy agent.
+	log "$(isolation_policy_req "$TENANT_ID" "$NS_ISOLATION")"
+	curl -X POST -d "$(isolation_policy_req "$TENANT_ID" "$NS_ISOLATION")" localhost:9630/ns-update || :
+
 	log "--- Setup with infra pod = $POD pid = $PID, PEERIFx = $PEERIFx, PEERIFn=$PEERIFn, TENANT=$NAMESPACE, NODE=$NODE, IP=$IP"
 	R=$(result "$IP" "$GATE_MASK")
 	log "$R"
